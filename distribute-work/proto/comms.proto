@@ -1,0 +1,14 @@
+syntax = "proto3";
+package comms;
+
+service DistributeWork {
+    rpc GetWork(WorkRequest) returns (stream Work);
+}
+
+message WorkRequest {
+}
+
+message Work {
+    uint32 id = 1;
+    string path = 2;
+}
