@@ -53,14 +53,10 @@ GNU licenses can be found at http://www.gnu.org/licenses/.
 
 use clap::{ArgAction, Parser};
 use std::collections::LinkedList;
-use std::path::PathBuf;
 use std::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream};
-use tonic::{
-    transport::{Identity, Server, ServerTlsConfig},
-    Request, Response, Status
-};
+use tonic::{metadata::MetadataValue, transport::Server, Request, Response, Status};
 
 use comms::distribute_work_server::{DistributeWork, DistributeWorkServer};
 use comms::{WorkRequest, Work};
@@ -126,12 +122,6 @@ struct Cli {
 
     #[arg(help="Listen on IPv6 instead of IPv4", long, action=ArgAction::SetTrue)]
     ipv6: bool,
-
-    #[arg(help="TLS Certificate Path", long, default_value="tls/server.pem")]
-    cert: PathBuf,
-
-    #[arg(help="TLS Key Path", long, default_value="tls/server.key")]
-    key: PathBuf,
 }
 
 #[tokio::main]
@@ -157,17 +147,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         work_list: Mutex::new(work_list),
     };
 
-    let cert = std::fs::read_to_string(cli.cert)?;
-    let key = std::fs::read_to_string(cli.key)?;
-    let identity = Identity::from_pem(cert, key);
+    let svc = DistributeWorkServer::with_interceptor(ws, check_auth);
 
     println!("Listening on {:?}", addr);
 
     Server::builder()
-        .tls_config(ServerTlsConfig::new().identity(identity))?
-        .add_service(DistributeWorkServer::new(ws))
+        .add_service(svc)
         .serve(addr)
         .await?;
 
     Ok(())
+}
+
+fn check_auth(req: Request<()>) -> Result<Request<()>, Status> {
+    let token: MetadataValue<_> = "Bearer some-auth-token".parse().unwrap();
+
+    match req.metadata().get("authorization") {
+        Some(t) if token == t => Ok(req),
+        _ => Err(Status::unauthenticated("No valid auth token")),
+    }
 }

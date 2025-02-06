@@ -51,8 +51,7 @@ GNU licenses can be found at http://www.gnu.org/licenses/.
 
 
 use clap::Parser;
-use std::path::PathBuf;
-use tonic::transport::{Certificate, Channel, ClientTlsConfig};
+use tonic::{metadata::MetadataValue, transport::Channel, Request};
 
 use comms::WorkRequest;
 use comms::distribute_work_client::DistributeWorkClient;
@@ -65,32 +64,27 @@ pub mod comms {
 struct Cli {
     server: String,
     port: u16,
-
-    #[arg(help="TLS Certificate Path", long, default_value="tls/server.pem")]
-    cert: PathBuf,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    let uri = format!("https://{}:{}", cli.server, cli.port).parse()?;
+    let uri = format!("http://{}:{}", cli.server, cli.port).parse()?;
     println!("Connecting to {}", uri);
 
-    let data_dir = std::path::PathBuf::from(std::env!("CARGO_MANIFEST_DIR"));
-    let pem = std::fs::read_to_string(data_dir.join("tls/ca.pem"))?;
-    let ca = Certificate::from_pem(pem);
-
-    let tls = ClientTlsConfig::new()
-        .ca_certificate(ca)
-        .domain_name("example.com");
-
     let channel = Channel::builder(uri)
-        .tls_config(tls)?
         .connect()
         .await?;
 
-    let mut client = DistributeWorkClient::new(channel);
+    let token: MetadataValue<_> = "Bearer some-auth-token".parse()?;
+
+    let mut client = DistributeWorkClient::with_interceptor(
+        channel,
+        move |mut req: Request<()>| {
+            req.metadata_mut().insert("authorization", token.clone());
+            Ok(req)
+        });
 
     let request = tonic::Request::new(WorkRequest {});
 
