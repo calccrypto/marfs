@@ -13,10 +13,12 @@ path = "src/client.rs"
 
 [dependencies]
 tonic = { version = "*" }
-prost = "0.13"
+prost = "0.13.4"
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
 tokio-stream = "0.1.17"
 clap = { version = "4.5.27", features = ["derive"] }
+serde = { version = "1.0.217", features = ["derive"] }
+jsonwebtoken = "9.3.0"
 
 [build-dependencies]
 tonic-build = "*"

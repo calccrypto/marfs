@@ -52,17 +52,21 @@ GNU licenses can be found at http://www.gnu.org/licenses/.
 
 
 use clap::{ArgAction, Parser};
+use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation, errors::ErrorKind};
 use std::collections::LinkedList;
+use std::fs;
 use std::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream};
-use tonic::{metadata::MetadataValue, transport::Server, Request, Response, Status};
+use tonic::{transport::Server, Request, Response, Status};
 
 use comms::distribute_work_server::{DistributeWork, DistributeWorkServer};
 use comms::{WorkRequest, Work};
 pub mod comms {
     tonic::include_proto!("comms");
 }
+
+mod claims;
 
 #[derive(Default)]
 pub struct MyDistributeWork {
@@ -160,10 +164,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn check_auth(req: Request<()>) -> Result<Request<()>, Status> {
-    let token: MetadataValue<_> = "Bearer some-auth-token".parse().unwrap();
+    let token = req.metadata().get("authorization").unwrap().to_str().unwrap();
+    let private_key = fs::read_to_string("public.key")?; // TODO: make this not hard-coded
 
-    match req.metadata().get("authorization") {
-        Some(t) if token == t => Ok(req),
-        _ => Err(Status::unauthenticated("No valid auth token")),
+    let mut validation = Validation::new(Algorithm::RS256);
+    validation.required_spec_claims.clear(); // remove needing exp
+
+    match decode::<claims::JWTClaims>(&token,
+                                      &DecodingKey::from_rsa_pem(private_key.as_bytes()).unwrap(),
+                                      &validation) {
+        Ok(_) => Ok(req),
+        Err(err) => match *err.kind() {
+            ErrorKind::InvalidToken => panic!("Token is invalid"),
+            ErrorKind::InvalidIssuer => panic!("Issuer is invalid"),
+            ErrorKind::InvalidSignature => panic!("Signature is invalid"),
+            _ => panic!("{:?}", err),
+        },
     }
 }
