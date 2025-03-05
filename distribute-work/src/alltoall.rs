@@ -52,17 +52,11 @@ GNU licenses can be found at http://www.gnu.org/licenses/.
 
 
 use jsonwebtoken::{encode, decode, Algorithm, DecodingKey, EncodingKey, Header, Validation, errors::ErrorKind};
-use std::collections::LinkedList;
-use std::fs;
 use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::sync::Mutex;
-use tokio::sync::mpsc;
+use std::sync::OnceLock;
 use tokio::task;
-use tokio::runtime::Runtime;
 use tonic::metadata::MetadataValue;
 use tonic::{transport, Request, Response, service, Status};
-use futures::future;
 use transport::Uri;
 
 use comms::distribute_buffer_server::{DistributeBuffer, DistributeBufferServer};
@@ -156,110 +150,66 @@ impl service::Interceptor for ServerInfo {
 }
 
 #[derive(Clone)]
-struct ClientState {
+struct ClientState <ClientConnection> {
     uri: Uri,
+    conn: ClientConnection,
 }
 
-impl ClientState {
-    pub fn new(uri: &Uri) -> Self {
+impl <ClientConnection> ClientState <ClientConnection> {
+    pub fn new(uri: &Uri, conn: ClientConnection) -> Self {
         ClientState {
             uri: uri.clone(),
+            conn: conn,
         }
     }
 }
 
-pub struct Worker {
-    secret:  String,
-    work:    LinkedList<String>,
-    jwt:     String,
-    server:  ServerInfo,
-    clients: LinkedList<ClientState>,
-}
+// FIXME: this isn't true due to how await works
+// FIXME: this value should not be global
+static SERVER_READY: OnceLock<bool> = OnceLock::new();
 
-impl Worker {
-    pub fn new(ipv6: bool, port: u16,
-               secret: &String,
-               // hosts: &Vec<SocketAddr>
-    ) -> Worker {
-        // TODO: Automatically fill in correctly
-        let claims = JWTClaims {
-            user: 1001,
-            job_id: 0,
-            rank: 0,
-        };
+use futures::future;
 
-        Worker {
-            secret:   secret.clone(),
-            work:     LinkedList::<String>::new(),
-            jwt:      encode(&Header::new(Algorithm::HS256), &claims,
-                             &EncodingKey::from_secret(secret.as_bytes())).unwrap(),
-            server:   ServerInfo::new(ipv6, port, &secret.clone()),
-            clients:  LinkedList::<ClientState>::new(),
-        }
-    }
+pub async fn init(ipv6: bool, port: u16, secret: &String,
+                  hosts: &Vec<SocketAddr>) -> Result<(), transport::Error> {
+    let mut server = ServerInfo::new(ipv6, port, secret);
 
-    pub async fn start(&mut self, hosts: &Vec<SocketAddr>) -> task::JoinHandle<Result<(), transport::Error>> {
-        let ret = task::spawn(self.server.start());
+    // start and yield the server in another thread so that the server won't block the main thread
+    let ret = task::spawn(async move {
+        let _ = SERVER_READY.set(true); // FIXME: being here does not guarantee the server has started
+        server.start().await
+    });
 
-        let mut clients = Vec::<_>::new();
+    let _ = SERVER_READY.wait(); // rust 1.87
 
-        println!("start");
-        for host in hosts.iter() {
-            let uri: Uri = format!("http://{}", host.to_string()).parse().unwrap();
-            println!("    {uri}");
-            let channel = transport::Channel::builder(uri.clone()).connect().await.unwrap();
-            let token: MetadataValue<_> = self.jwt.parse().unwrap();
+    // TODO: Automatically fill in correctly
+    let claims = JWTClaims {
+        user: 1001,
+        job_id: 0,
+        rank: 0,
+    };
 
-            // TODO: store this somewhere
-            let dbc = DistributeBufferClient::with_interceptor(
-                channel,
-                move | mut req: Request<()>| {
-                    req.metadata_mut().insert("authorization", token.clone());
-                    Ok(req)
-                });
+    let jwt = encode(&Header::new(Algorithm::HS256), &claims,
+                     &EncodingKey::from_secret(secret.as_bytes())).unwrap();
 
-            print_type_of(&dbc);
-            clients.push(dbc.clone());
+    // connect clients
+    let clients = hosts.iter().map(async | &host | {
+        let uri: Uri = format!("http://{}", host.to_string()).parse().unwrap();
+        println!("Connected to {}", uri);
+        let channel = transport::Channel::builder(uri.clone()).connect().await.unwrap();
+        let token: MetadataValue<_> = jwt.parse().unwrap();
 
-            self.clients.push_back(ClientState::new(&uri));
-        }
+        // TODO: store this somewhere
+        let dbc = DistributeBufferClient::with_interceptor(
+            channel,
+            move | mut req: Request<()>| {
+                req.metadata_mut().insert("authorization", token.clone());
+                Ok(req)
+            });
 
-        ret
-    }
+        ClientState::new(&uri, dbc)
+    }).collect::<Vec<_>>();
+    future::join_all(clients).await;
 
-    // async fn new_sender(&mut self, uri: &SocketAddr) {
-    //     let channel = transport::Channel::builder(uri.to_string().parse().unwrap()).connect().await?;
-    //     let token: MetadataValue<_> = self.jwt.parse().unwrap();
-
-    //     // TODO: store this somewhere
-    //     let dbc = DistributeBufferClient::with_interceptor(
-    //         channel,
-    //         move | mut req: Request<()>| {
-    //             req.metadata_mut().insert("authorization", token.clone());
-    //             Ok(req)
-    //         });
-
-    //     print_type_of(&dbc);
-
-    //     self.clients.push_back(ClientState::new(uri));
-
-    //     dbc
-
-    //     // let request = tonic::Request::new(BufferData{ data: "abc".as_bytes().to_vec() });
-
-    //     // // call rpc
-    //     // let reply = dbc
-    //     //     .send(request)
-    //     //     .await?
-    //     //     .into_inner();
-
-    //     // println!("reply: {:?}", reply);
-
-    //     // // process work
-    //     // while let Some(work) = stream.message().await? {
-    //     //     println!("Got: {:?}", work);
-    //     // }
-
-    //     // Ok(())
-    // }
+    ret.await.unwrap()
 }

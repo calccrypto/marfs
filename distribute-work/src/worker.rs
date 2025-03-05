@@ -73,8 +73,8 @@ struct Cli {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    let mut worker = alltoall::Worker::new(cli.ipv6, cli.port, &cli.secret);
-    let state = worker.start(&cli.hosts);
+    // start up server and connections to clients
+    let state = alltoall::init(cli.ipv6, cli.port, &cli.secret, &cli.hosts);
 
     state.await?;
     Ok(())
