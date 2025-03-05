@@ -11,6 +11,14 @@ path = "src/server.rs"
 name = "client"
 path = "src/client.rs"
 
+[[bin]]
+name = "worker"
+path = "src/worker.rs"
+
+[lib]
+name = "alltoall"
+path = "src/alltoall.rs"
+
 [dependencies]
 tonic = { version = "*" }
 prost = "0.13.4"
@@ -19,6 +27,7 @@ tokio-stream = "0.1.17"
 clap = { version = "4.5.27", features = ["derive"] }
 serde = { version = "1.0.217", features = ["derive"] }
 jsonwebtoken = "9.3.0"
+futures = "0.3.31"
 
 [build-dependencies]
 tonic-build = "*"

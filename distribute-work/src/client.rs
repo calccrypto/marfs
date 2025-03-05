@@ -64,8 +64,6 @@ pub mod comms {
     tonic::include_proto!("comms");
 }
 
-mod claims;
-
 #[derive(Parser, Debug)]
 #[command()]
 struct Cli {
@@ -84,20 +82,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Connecting to {}", uri);
 
     // this process is running as uid = 1001 for job 0 and is rank 0
-    let claims = claims::JWTClaims {
+    let claims = alltoall::JWTClaims {
         user: 1001,
         job_id: 0,
         rank: 0,
     };
 
     // get path of ssh private key - can't use env::var("HOME") in default value
-    let pri_path = if let Some(pri) = cli.private_key {
-        pri
-    } else {
-        let mut path = PathBuf::from(env::var("HOME").unwrap());
-        path.push(".ssh/id_rsa");
-        path
-    };
+    // let pri_path = if let Some(pri) = cli.private_key {
+    //     pri
+    // } else {
+    //     let mut path = PathBuf::from(env::var("HOME").unwrap());
+    //     path.push(".ssh/id_rsa");
+    //     path
+    // };
 
     // https://serverfault.com/questions/706336/how-to-get-a-pem-file-from-ssh-key-pair
     // https://docs.mia-platform.eu/docs/runtime_suite/client-credentials/jwt_keys
@@ -105,9 +103,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // rm private.key.pub
     // ssh-keygen -f private.key -e -m PKCS8 > public.key
 
-    let pri_raw = fs::read_to_string(pri_path)?;
-    let jwt = encode(&Header::new(Algorithm::RS256), &claims,
-                     &EncodingKey::from_rsa_pem(pri_raw.as_bytes())?)?;
+    let private_key = fs::read_to_string("private.key")?;
+    // let pri_raw = fs::read_to_string(pri_path)?;
+    let jwt = encode(&Header::new(Algorithm::HS256), &claims,
+                     &EncodingKey::from_secret(private_key.as_bytes())
+    )?;
+    // let jwt = encode(&Header::new(Algorithm::RS256), &claims,
+    //                  &EncodingKey::from_rsa_pem(pri_raw.as_bytes())?
+    // )?;
     let token: MetadataValue<_> = jwt.parse()?;
 
     let channel = Channel::builder(uri)

@@ -65,3 +65,16 @@ message Work {
     uint32 id = 1;
     string path = 2;
 }
+
+
+service DistributeBuffer {
+    rpc Send(BufferData) returns (BufferReply);
+}
+
+message BufferData {
+    bytes data = 1;
+}
+
+message BufferReply {
+    int32 status = 1;
+}

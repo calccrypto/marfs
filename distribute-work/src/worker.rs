@@ -48,3 +48,34 @@ original work plus LANL contributions is found at
 https://github.com/jti-lanl/aws4c.
 GNU licenses can be found at http://www.gnu.org/licenses/.
 */
+
+
+
+use clap::{ArgAction, Parser};
+use std::net::SocketAddr;
+
+mod alltoall;
+
+#[derive(Parser, Debug)]
+#[command()]
+struct Cli {
+    port: u16,
+
+    secret: String,
+
+    hosts: Vec<SocketAddr>,
+
+    #[arg(help="Listen on IPv6 instead of IPv4", long, action=ArgAction::SetTrue)]
+    ipv6: bool,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse();
+
+    let mut worker = alltoall::Worker::new(cli.ipv6, cli.port, &cli.secret);
+    let state = worker.start(&cli.hosts);
+
+    state.await?;
+    Ok(())
+}

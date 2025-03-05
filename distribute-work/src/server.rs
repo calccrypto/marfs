@@ -66,8 +66,6 @@ pub mod comms {
     tonic::include_proto!("comms");
 }
 
-mod claims;
-
 #[derive(Default)]
 pub struct MyDistributeWork {
     per_client_work_count: usize,       // floor(# of work items / clients)
@@ -165,14 +163,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn check_auth(req: Request<()>) -> Result<Request<()>, Status> {
     let token = req.metadata().get("authorization").unwrap().to_str().unwrap();
-    let private_key = fs::read_to_string("public.key")?; // TODO: make this not hard-coded
+    let private_key = fs::read_to_string("private.key")?; // TODO: make this not hard-coded
 
-    let mut validation = Validation::new(Algorithm::RS256);
+    let mut validation = Validation::new(Algorithm::HS256);
     validation.required_spec_claims.clear(); // remove needing exp
 
-    match decode::<claims::JWTClaims>(&token,
-                                      &DecodingKey::from_rsa_pem(private_key.as_bytes()).unwrap(),
-                                      &validation) {
+    match decode::<alltoall::JWTClaims>(&token,
+                                        &DecodingKey::from_secret(private_key.as_bytes()),
+                                        &validation) {
+    // match decode::<alltoall::JWTClaims>(&token,
+    //                                   &DecodingKey::from_rsa_pem(private_key.as_bytes()).unwrap(),
+    //                                   &validation) {
         Ok(_) => Ok(req),
         Err(err) => match *err.kind() {
             ErrorKind::InvalidToken => panic!("Token is invalid"),
