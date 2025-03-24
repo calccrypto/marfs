@@ -78,6 +78,7 @@ marfs_rman_SOURCES =        \
     outputinfo.c            \
     parse_program_args.c    \
     read_last_log.c         \
+    repack.c                \
     resourcemanager.c       \
     resourceprocessing.c    \
     resourcethreads.c       \
