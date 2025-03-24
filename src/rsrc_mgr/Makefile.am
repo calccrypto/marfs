@@ -83,6 +83,7 @@ marfs_rman_SOURCES =        \
     resourceprocessing.c    \
     resourcethreads.c       \
     rmanstate.c             \
+    streamwalker.c          \
     summary_log_setup.c     \
     work.c                  \
     worker.c
