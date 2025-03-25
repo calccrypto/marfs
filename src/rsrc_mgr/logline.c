@@ -318,24 +318,22 @@ static int parse_repack(char **parseloc, opinfo *op) {
 }
 
 /**
- * Parse a new operation (or sequence of them) from the given logfile
+ * Parse a new operation from the given logfile
  * @param int logfile : Reference to the logfile to parse a line from
  * @param char* eof : Reference to a character to be populated with an exit flag value
  *                    1 if we hit EOF on the file on a line division
  *                    -1 if we hit EOF in the middle of a line
  *                    zero otherwise
- * @return opinfo* : Reference to a new set of operation info structs (caller must free)
- * NOTE -- Under most failure conditions, the logfile offset will be returned to its original value.
- *         This is not the case if parsing reaches EOF, in which case, offset will be left there.
+ * @param int* nextval: Whether or not there is another opinfo after this one
+ * @return opinfo* : Reference to a new operation info struct (caller must free)
  */
-opinfo* parselogline(int logfile, char* eof) {
+opinfo* parselogline_one(int logfile, char* eof, int *nextval) {
    char buffer[MAX_BUFFER] = {0};
    char* tgtchar = buffer;
-   off_t origoff = lseek(logfile, 0, SEEK_CUR);
-   if (origoff < 0) {
-      LOG(LOG_ERR, "Failed to identify current logfile offset\n");
-      return NULL;
-   }
+
+   *eof = 0;       // preemptively populate with zero
+   *nextval = 0;
+
    // read in an entire line
    // NOTE -- Reading one char at a time isn't very efficient, but we don't expect parsing of
    //         logfiles to be a significant performance factor.  This approach greatly simplifies
@@ -350,7 +348,6 @@ opinfo* parselogline(int logfile, char* eof) {
       // check for excessive string length
       if (tgtchar - buffer >= MAX_BUFFER - 1) {
          LOG(LOG_ERR, "Parsed line exceeds memory limits\n");
-         lseek(logfile, origoff, SEEK_SET);
          *eof = 0;
          return NULL;
       }
@@ -373,12 +370,9 @@ opinfo* parselogline(int logfile, char* eof) {
       }
 
       LOG(LOG_ERR, "Encountered error while reading from logfile\n");
-      lseek(logfile, origoff, SEEK_SET);
       *eof = 0;
       return NULL;
    }
-
-   *eof = 0; // preemptively populate with zero
 
    // allocate our operation node
    opinfo* op = malloc(sizeof(*op));
@@ -413,7 +407,6 @@ opinfo* parselogline(int logfile, char* eof) {
 
    if (rc != 0) {
       free(op);
-      lseek(logfile, origoff, SEEK_SET);
       return NULL;
    }
 
@@ -423,12 +416,12 @@ opinfo* parselogline(int logfile, char* eof) {
    }
    else if (*parseloc != 'E') {
       LOG(LOG_ERR, "Unexpected START string value: '%c'\n", *parseloc);
-      goto error;
+      return NULL;
    }
 
    if (parseloc[1] != ' ') {
       LOG(LOG_ERR, "Unexpected trailing character after START value: '%c'\n", *(parseloc + 1));
-      goto error;
+      return NULL;
    }
 
    parseloc += 2;
@@ -438,7 +431,7 @@ opinfo* parselogline(int logfile, char* eof) {
    unsigned long long parseval = strtoull(parseloc, &endptr, 10);
    if (endptr == NULL || *endptr != ' ') {
       LOG(LOG_ERR, "Failed to parse COUNT value with unexpected char: '%c'\n", *endptr);
-      goto error;
+      return NULL;
    }
 
    op->count = (size_t)parseval;
@@ -449,7 +442,7 @@ opinfo* parselogline(int logfile, char* eof) {
    long sparseval = strtol(parseloc, &endptr, 10);
    if (endptr == NULL || *endptr != ' ') {
       LOG(LOG_ERR, "Failed to parse ERRNO value with unexpected char: '%c'\n", *endptr);
-      goto error;
+      return NULL;
    }
 
    op->errval = (int)sparseval;
@@ -457,14 +450,13 @@ opinfo* parselogline(int logfile, char* eof) {
    parseloc = endptr + 1;
 
    // parse the NEXT value
-   char nextval = 0;
    if (*(tgtchar - 1) == '-') {
       if (*(tgtchar - 2) != ' ') {
          LOG(LOG_ERR, "Unexpected char preceeds NEXT flag: '%c'\n", *(tgtchar - 2));
-         goto error;
+         return NULL;
       }
 
-      nextval = 1; // note that we need to append another op
+      *nextval = 1; // note that we need to append another op
       tgtchar -= 2; // pull this back, so we'll trim off the NEXT value
    }
 
@@ -472,30 +464,49 @@ opinfo* parselogline(int logfile, char* eof) {
    *tgtchar = '\0'; // trim the string, to make FTAG parsing easy
    if (ftag_initstr(&op->ftag, parseloc)) {
       LOG(LOG_ERR, "Failed to parse FTAG value of log line\n");
-      goto error;
-   }
-
-   // finally, parse in any subsequent linked ops
-   if (nextval) {
-      // NOTE -- Recursive parsing isn't the most efficient approach.
-      //         Simple though, and, once again, we don't expect logfile parsing to be a
-      //         significant performance consideration.
-      LOG(LOG_INFO, "Recursively parsing subsequent operation\n");
-      op->next = parselogline(logfile, eof);
-      if (op->next == NULL) {
-         LOG(LOG_ERR, "Failed to parse linked operation\n");
-         resourcelog_freeopinfo(op);
-         if (*eof == 0) {
-             lseek(logfile, origoff, SEEK_SET);
-         }
-         return NULL;
-      }
+      return NULL;
    }
 
    return op;
+}
 
-  error:
-   resourcelog_freeopinfo(op);
-   lseek(logfile, origoff, SEEK_SET);
-   return NULL;
+/**
+ * Parse a new operation from the given logfile
+ * @param int logfile : Reference to the logfile to parse a line from
+ * @param char* eof : Reference to a character to be populated with an exit flag value
+ *                    1 if we hit EOF on the file on a line division
+ *                    -1 if we hit EOF in the middle of a line
+ *                    zero otherwise
+ * @return opinfo* : Reference to a new set of operation info structs (caller must free)
+ * NOTE -- Under most failure conditions, the logfile offset will be returned to its original value.
+ *         This is not the case if parsing reaches EOF, in which case, offset will be left there.
+ */
+opinfo* parselogline(int logfile, char* eof) {
+   off_t origoff = lseek(logfile, 0, SEEK_CUR);
+   if (origoff < 0) {
+      LOG(LOG_ERR, "Failed to identify current logfile offset\n");
+      return NULL;
+   }
+
+   opinfo head;
+   opinfo *curr = &head;
+   int nextval = 1;
+   while (curr != NULL && nextval == 1) {
+      curr->next = parselogline_one(logfile, eof, &nextval);
+      curr = curr->next;
+   }
+
+   // ended before eof (error)
+   if (*eof == 0) {
+      lseek(logfile, origoff, SEEK_SET);
+   }
+
+   // there was supposed to be another value, but could not parse the line
+   // so clean up the entire chain as per recursive implementation
+   if (nextval == 1) {
+      resourcelog_freeopinfo(head.next);
+      return NULL;
+   }
+
+   return head.next;
 }
