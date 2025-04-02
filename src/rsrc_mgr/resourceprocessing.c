@@ -100,7 +100,7 @@ static void process_deleteobj(marfs_position* pos, opinfo* op) {
 
          // delete the object
          LOG(LOG_INFO, "Deleting object %zu of stream \"%s\"\n", tmptag.objno, tmptag.streamid);
-
+         int olderrno = errno;
          if (ne_delete(ds->nectxt, objname, location)) {
             if (errno == ENOENT) {
                LOG(LOG_INFO, "Object %zu of stream \"%s\" was already deleted\n", tmptag.objno, tmptag.streamid);
@@ -113,6 +113,7 @@ static void process_deleteobj(marfs_position* pos, opinfo* op) {
             }
          }
 
+         errno = olderrno;
          free(objname);
          countval++;
       }
@@ -248,6 +249,8 @@ static void process_deleteref(const marfs_position* pos, opinfo* op) {
          }
 
          // perform the deletion
+         int olderrno = errno;
+         errno = 0;
          if (mdal->unlinkref(pos->ctxt, rpath) && errno != ENOENT) {
             op->errval = (errno) ? errno : ENOTRECOVERABLE;
             LOG(LOG_ERR, "Failed to unlink reference path \"%s\"\n", rpath);
@@ -257,6 +260,7 @@ static void process_deleteref(const marfs_position* pos, opinfo* op) {
             break;
          }
 
+         errno = olderrno;
          LOG(LOG_INFO, "Deleted reference path \"%s\"\n", rpath);
          free(rpath);
          countval++;
@@ -787,6 +791,8 @@ int process_refdir(marfs_ns* ns, MDAL_SCANNER refdir, const char* refdirpath, ch
    // scan through the dir until we find something of interest
    MDAL mdal = ns->prepo->metascheme.mdal;
    struct dirent* dent = NULL;
+   int olderrno = errno;
+   errno = 0;
    char type = 9;
    while ((dent = mdal->scan(refdir)) != NULL) {
       // skip any 'hidden' files or default ('.'/'..') entries
@@ -831,6 +837,7 @@ int process_refdir(marfs_ns* ns, MDAL_SCANNER refdir, const char* refdirpath, ch
    *reftgt = malloc(sizeof(char) * (rpathlen + 1));
    snprintf(*reftgt, rpathlen + 1, "%s/%s", refdirpath, dent->d_name);
 
+   errno = olderrno; // restore old errno
    return ((int)type + 1);
 }
 
