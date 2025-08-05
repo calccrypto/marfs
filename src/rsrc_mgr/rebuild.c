@@ -77,7 +77,7 @@ static void print_usage_info(const int rank) {
     }
 
     printf("\n"
-           "quota [-c MarFS-Config-File] [-n MarFS-NS-Target] [-r] [-i Iteraion-Name] [-l Log-Root]\n"
+           "rebuild [-c MarFS-Config-File] [-n MarFS-NS-Target] [-r] [-i Iteraion-Name] [-l Log-Root]\n"
            "[-d] [-h]\n"
            "\n"
            " Arguments --\n"
@@ -91,6 +91,12 @@ static void print_usage_info(const int rank) {
            "  -l Log-Root          : Specifies the dir to be used for resource log storage\n"
            "                         (defaults to \"%s\", if unspecified)\n"
            "  -d                   : Specifies a 'dry-run', logging but skipping execution of all ops\n"
+           "  -L [NE-Location]     : Specifies NE object location to target for rebuilds\n"
+           "                         Value Format = <LocType><LocValue>\n"
+           "                                           [-<LocType><LocValue>]*\n"
+           "                         Where, <LocType>  = 'p' (pod), 'c' (cap), or 's' (scatter)\n"
+           "                                <LocValue> = A numeric value for the specified p/c/s location\n"
+           "                         NOTE -- Missing 'NE-Location' value implies rebuild of ALL objects!\n"
            "  -h                   : Prints this usage info\n"
            "\n",
            DEFAULT_LOG_ROOT);
@@ -110,14 +116,18 @@ static int parse_args(int argc, char **argv,
     }
 
     thresh->skip = currenttime.tv_sec - INACTIVE_RUN_SKIP_THRESH;
+    thresh->rbl  = currenttime.tv_sec - RB_L_THRESH;
+    thresh->rbm  = currenttime.tv_sec - RB_M_THRESH;
 
-    // set some quota specific values
+    // set some rebuild specific values
     rman->tqopts.thread_init_func     = rthread_init;
     rman->tqopts.thread_consumer_func = rthread_all_consumer;
-    rman->tqopts.thread_producer_func = rthread_quota_producer;
+    rman->tqopts.thread_producer_func = rthread_rebuild_producer;
     rman->tqopts.thread_pause_func    = NULL;
     rman->tqopts.thread_resume_func   = NULL;
     rman->tqopts.thread_term_func     = rthread_term;
+
+    rman->gstate.thresh.rebuildthreshold = 1;  // time_t used as bool for now
 
     // parse all position-independent arguments
     int print_usage = 0;
@@ -147,6 +157,54 @@ static int parse_args(int argc, char **argv,
             case 'd':
                 rman->gstate.dryrun = 1;
                 break;
+            case 'L':
+            {
+                rman->gstate.lbrebuild = 1;
+
+                char* locparse = optarg;
+                char lflag = *locparse;
+                if (lflag == '-') {
+                    lflag = *++locparse;
+                }
+
+                // check for a location value type flag
+                if ((*locparse != 'p') &&
+                    (*locparse != 'c') &&
+                    (*locparse != 's')) {
+                    printf("ERROR: Failed to parse '-L' argument value: \"%s\"\n", optarg);
+                    print_usage = 1;
+                    break;
+                }
+
+                // move to the value part of the string
+                locparse++;
+
+                // parse the expected numeric value trailing the type flag
+                char* endptr = NULL;
+                unsigned long long parseval = strtoull(locparse, &endptr, 10);
+                if ((parseval == ULLONG_MAX) || (endptr == NULL) ||
+                    ((*endptr != '-') && (*endptr != '\0'))) {
+                    printf("ERROR: Failed to parse '%c' location from '-L' argument value: \"%s\"\n",
+                           lflag, optarg);
+                    print_usage = 1;
+                    break;
+                }
+
+                // actually assign the parsed value to the appropriate location value
+                switch (lflag) {
+                    case 'p':
+                        rman->gstate.rebuildloc.pod = parseval;
+                        break;
+                    case 'c':
+                        rman->gstate.rebuildloc.cap = parseval;
+                        break;
+                    case 's':
+                        rman->gstate.rebuildloc.scatter = parseval;
+                        break;
+                }
+
+                break;
+            }
             case '?':
                 printf("ERROR: Unrecognized cmdline argument: \'%c\'\n", optopt);
                 // fall through
@@ -187,6 +245,15 @@ static int parse_args(int argc, char **argv,
         strftime(rman->iteration, ITERATION_STRING_LEN, "%Y-%m-%d-%H:%M:%S", timeinfo);
     }
 
+    if (rman->gstate.thresh.rebuildthreshold) {
+        if (rman->gstate.lbrebuild) {
+            rman->gstate.thresh.rebuildthreshold = thresh->rbl;
+        }
+        else {
+            rman->gstate.thresh.rebuildthreshold = thresh->rbm;
+        }
+    }
+
     return 0;
 }
 
@@ -215,8 +282,6 @@ int main(int argc, char *argv[]) {
 
     rmanstate rman;
     rmanstate_init(&rman, rank, rankcount);
-
-    rman.quotas = 1; /* this program only gets quotas */
 
     char *config_path = NULL;
     char *ns_path = NULL;
